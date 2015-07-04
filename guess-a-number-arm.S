@@ -1,3 +1,7 @@
+#
+# Guess a number from 0 to 99
+# Compile with gcc -nostartfiles -g guess-a-number-arm.S -o guess-a-number
+#
 
 #define __ASSEMBLY__
 
