@@ -1,7 +1,10 @@
 #
-#
-#
 # Sieve of Eratosthenes
+# Segmented sieve, https://en.wikipedia.org/wiki/Sieve_of_Eratosthenes#Segmented_sieve
+# Running on Quad Core Raspberry PI 2, to take 60 seconds to find primes from 2 to
+# 2 ^ 32 (if disable printf)
+#
+# Compile by: gcc sieve.S -O2 -g -o sieve -lpthread
 #
 
 #define __ASSEMBLY__
@@ -12,28 +15,30 @@
 #define O_WRONLY        00000001
 #define O_RDWR          00000002
 
-#if 0
-#define MAX    (131072)
-#define STAGE1 (262144)
-#define STAGE2 (131072)
+/* THREADS = NUMBER OF CORES, LOG2STAGE2 = L1_DCACHE_SIZE * 8 */
+#define THREADS (4)
+#define LOG2STAGE2 (18)
 
-#define BMAP   (16384)
-#else
-#define MAX    (262144)
-#define STAGE1 (524288)
-#define STAGE2 (262144)
+#define LOG2MAX (16)
+#define MAX     (1<<LOG2MAX)
+/* stage 1 prime number stored in half word */
+#define STAGE1  (MAX * 2)
+#define STAGE2  (1<<LOG2STAGE2)
+#define BMAP    (MAX / 8)
+#define LOG2BMAP2 (LOG2STAGE2 - 3)
+#define BMAP2   (STAGE2 / 8 * THREADS)
 
-#define BMAP   (32768)
-
-#endif
+.data
+format: .asciz "%u "
 
 .bss
 
 .balign 4
 stage1: . = . + STAGE1
 bitmap: . = . + BMAP
-bmap2:  . = . + BMAP
+bmap2:  . = . + BMAP2
 number: . = . + 16
+thread: . = . + (THREADS * 4)
 
 #define OS(x) mov r7, $__NR_ ## x; swi #0
 
@@ -101,29 +106,11 @@ divide:
 	moveq pc, lr
 
 display_number:
-	push {r6, lr}
-	mov r7, #1
-	ldr r6, =number
-	add r6, r6, #10
-	mov r1, #'\n'
-	strb r1, [r6, #-1]!
-
-1:
-	mov r1, #10
-	bl divide
-	add r2, r0, #'0'
-	strb r2, [r6, #-1]!
-	add r7, r7, #1
-	mov r0, r1
-	cmp r0, #0
-	bne 1b
-
-	mov r1, r6
-	mov r2, r7
-	mov r0, #1
-	OS(write)
-
-	pop {r6, pc}
+	push {r12, lr}
+	mov r1, r0
+	ldr r0, =format
+	bl  printf
+	pop {r12, pc}
 
 sieve1:
 	push {lr}
@@ -131,6 +118,7 @@ sieve1:
 	cmp r4, r11
 	bhs 2f	
 	mov r0, r4
+	bl display_number
 	strh r4, [r8], #2
 	mov r0, r4
 1:
@@ -148,10 +136,12 @@ sieve1:
 	mov r4, r0
 	b 2b
 2:
+	mov r0, #0
+	strh r0, [r8], #2
 	pop {pc}
 
 sieve2:
-	push {lr}
+	push {r6, lr}
 	mov r6, r4
 3:
 	mov r4, r6
@@ -181,36 +171,34 @@ sieve2:
 	bge 1f
 
 	mov r6, r0
-#if 0
 	add r0, r0, r4
 	bl  display_number
-#endif
 
 	add r0, r6, #1
 	cmp r0, r11
 	blt 1b
 1:
-	pop {pc}
+	pop {r6, pc}
 
-.globl _start
-_start:
-	ldr r12, =bitmap
-	ldr r8,  =stage1
-	mov r4,  #2
-	mov r11, #MAX
-	bl  sieve1
+partition:
+	push {r4-r11,lr}
+	mov r6, r0
+
 # R8 / 2 number of primes in sqrt(n)
 	ldr r8, =stage1
-	mov r4, #MAX
-
+	mov r4, #STAGE2
+	add r4, r4, r6, lsl #LOG2STAGE2
 2:
+#if 0
 	mov r0, r4
-	mov r0, r0, lsr #24
-	mov r0, r0, lsl #24
+	mov r0, r0, lsr #26
+	mov r0, r0, lsl #26
 	cmp r0, r4
 	bleq display_number
+#endif
 	# memset(bmap2, 0)
 	ldr r12, =bmap2
+	add r12, r12, r6, lsl #LOG2BMAP2
 	mov r0, #0
 	mov r1, r0
 	mov r2, r0
@@ -225,10 +213,46 @@ _start:
 	bne  1b
 
 	ldr r12, =bmap2
+	add r12, r12, r6, lsl #15
 	mov r11, #STAGE2
 	ldr r8,  =stage1
 	bl sieve2
-	adds r4, r4, #STAGE2
+	adds r4, r4, #(STAGE2 * THREADS)
 	bcc 2b
 
-	OS(exit)
+	pop {r4-r11,pc}
+
+.globl main
+main:
+	push {r4-r11,lr}
+	ldr r12, =bitmap
+	ldr r8,  =stage1
+	mov r4,  #2
+	mov r11, #MAX
+	bl  sieve1
+
+	mov r4, #0
+	ldr r5, =thread
+1:
+	mov r0, r5
+	mov r3, r4
+	mov r1, #0
+	ldr r2, =partition
+	bl  pthread_create
+
+	add r5, r5, #4
+	add r4, r4, #1
+	cmp r4, #THREADS
+	blt 1b
+
+	mov r4, #0
+	ldr r5, =thread
+1:
+	ldr r0, [r5], #4
+	mov r1, #0
+	bl pthread_join
+	add r4, r4, #1
+	cmp r4, #THREADS
+	blt 1b
+
+	pop {r4-r11,pc}
