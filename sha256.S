@@ -1,5 +1,7 @@
+
+#define __ASSEMBLY__
 #
-# SHA256 inner loop
+# SHA256 library, using neon SIMD instructions.
 #
 .macro  VLOAD x
 	vld1.64 {q\x}, [r0]!
@@ -26,6 +28,14 @@
 .endm
 .macro VAD d s
 	vadd.u32 \d, \d, \s
+.endm
+.macro REV4
+	ldmia r0, {r1-r4}
+	rev r1, r1
+	rev r2, r2
+	rev r3, r3
+	rev r4, r4
+	stmia r0, {r1-r4}
 .endm
 
 .data
@@ -181,3 +191,133 @@ sha256_update:
 
 	vpop {q4-q7}
 	pop {r4-r11, pc}
+
+#define CTX_BUF 0
+#define CTX_BSZ 64
+#define CTX_STA 64
+#define CTX_BIT 96
+#define CTX_LEN 104
+#define PAD 8
+
+#
+# uint8_t *sha256_final(struct sha256_context *context) 
+#
+.globl sha256_final
+sha256_final:
+	push {lr}
+
+	mov r3, #0
+	ldr r1, [r0, #CTX_LEN]
+	mov r2, #0x80
+	strb r2, [r0, r1]
+	add r1, r1, #1
+	cmp r1, #(CTX_BSZ-PAD)
+	bls 1f
+2:
+	cmp r1, #CTX_BSZ
+	bhs 2f
+	strb r3, [r0, r1]
+	add r1, r1, #1
+	b 2b
+2:
+	add r1, r0, #CTX_BSZ
+	push {r0-r2}
+	bl sha256_update
+	pop  {r0-r2}
+
+	mov r1, #0
+1:
+	mov r3, #0
+	strb r3, [r0, r1]
+	add r1, r1, #1
+	cmp r1, #(CTX_BSZ-PAD)
+	blo 1b
+
+	ldr r2, [r0, #CTX_BIT]
+	ldr r3, [r0, #(CTX_BIT + 4)]
+	ldr r12, [r0, #CTX_LEN]
+	add r2, r2, r12, lsl #3
+	rev r2, r2
+	rev r3, r3
+	str r3, [r0, r1]
+	add r1, r1, #4
+	str r2, [r0, r1]
+
+	add r1, r0, #CTX_BSZ
+	push {r0}
+	bl sha256_update
+	pop  {r0}
+	push {r4}
+	add r0, r0, #CTX_STA
+	REV4
+	add r0, r0, #16
+	REV4
+	pop  {r4}
+	sub r0, r0, #16
+
+	pop {pc}
+
+#if 0
+#
+# sha256_progress(struct sha256_context *context, uint8_t data[], uint32_t len)
+#
+.globl sha256_progress
+sha256_progress:
+	push {r4-r7, lr}
+	ldr r3, [r0, #CTX_LEN]
+2:
+	ldrb r12, [r1], #1
+	strb r12, [r0, r3]
+	ldr r4, [r0, #CTX_BIT]
+	ldr r5, [r0, #(CTX_BIT + 4)]
+	adds r4, r4, #8
+	adc  r5, r5, #0
+	str r4, [r0, #CTX_BIT]
+	str r5, [r0, #(CTX_BIT + 4)]
+	add r3, r3, #1
+	cmp r3, #64
+	bne 1f
+# update state every 512 bits
+	mov r4, r0
+	mov r5, r1
+	mov r6, r2
+	mov r7, r3
+	add r1, r0, #CTX_BSZ
+	bl sha256_update
+	mov r0, r4
+	mov r1, r5
+	mov r2, r6
+	mov r3, r7
+	mov r3, #0
+1:
+	str r3, [r0, #CTX_LEN]
+	subs r2, r2, #1
+	bne  2b
+
+	pop {r4-r7, pc}
+#endif
+
+#
+# sha256_init(sha256_context *context)
+# struct sha256_context {
+#         uint8_t  buf[64];
+#         uint32_t state[8];
+#         uint64_t bitlen;
+#         uint32_t datalen;
+# };
+#
+.globl sha256_init
+sha256_init:
+	add r0, r0, #CTX_STA
+	ldr r1, =h
+	add r3, r1, #32
+1:
+	ldr r2, [r1], #4
+	str r2, [r0], #4
+	cmp r1, r3
+	blo 1b
+	mov r1, #0
+	str r1, [r0], #4
+	str r1, [r0], #4
+	str r1, [r0], #4
+	mov pc, lr
