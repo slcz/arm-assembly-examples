@@ -1,8 +1,10 @@
-
-#define __ASSEMBLY__
+#
+# gcc -mfpu=neon -g -O3 -Wall shatest.c sha256.S
 #
 # SHA256 library, using neon SIMD instructions.
 #
+
+#define __ASSEMBLY__
 .macro  VLOAD x
 	vld1.64 {q\x}, [r0]!
 	vrev32.8 q\x, q\x
